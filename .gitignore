@@ -1,0 +1,19 @@
+# 构建产物
+RemoteRemap.app/
+RemoteRemap
+probe
+dist/
+
+# macOS
+.DS_Store
+
+# 调试日志（probe 跑出来的）
+RemoteRemap.log
+*.log
+
+# 临时
+*.tmp
+
+# Xcode 用户数据
+*.xcuserstate
+*.xcuserdatad/
