@@ -172,10 +172,24 @@ struct ButtonMapping: Codable, Equatable {
 final class Config: ObservableObject {
     static let shared = Config()
     private let storeKey = "remote_remap_v1"
+    private let arEnabledKey   = "autoRepeatEnabled"
+    private let arInitialMsKey = "autoRepeatInitialDelayMs"
+    private let arIntervalMsKey = "autoRepeatIntervalMs"
 
     /// 每颗按键的映射（key 是 RemoteButton.id）。
     @Published var mappings: [String: ButtonMapping] {
-        didSet { save() }
+        didSet { saveMappings() }
+    }
+
+    /// 长按自动重复：开关 + 启动延迟 + 重复间隔
+    @Published var autoRepeatEnabled: Bool {
+        didSet { UserDefaults.standard.set(autoRepeatEnabled, forKey: arEnabledKey) }
+    }
+    @Published var autoRepeatInitialDelayMs: Int {
+        didSet { UserDefaults.standard.set(autoRepeatInitialDelayMs, forKey: arInitialMsKey) }
+    }
+    @Published var autoRepeatIntervalMs: Int {
+        didSet { UserDefaults.standard.set(autoRepeatIntervalMs, forKey: arIntervalMsKey) }
     }
 
     private init() {
@@ -186,9 +200,14 @@ final class Config: ObservableObject {
             for (k, v) in loaded { initial[k] = v }
         }
         self.mappings = initial
+
+        let d = UserDefaults.standard
+        self.autoRepeatEnabled        = (d.object(forKey: arEnabledKey)   as? Bool) ?? true
+        self.autoRepeatInitialDelayMs = (d.object(forKey: arInitialMsKey) as? Int)  ?? 500
+        self.autoRepeatIntervalMs     = (d.object(forKey: arIntervalMsKey) as? Int) ?? 100
     }
 
-    private func save() {
+    private func saveMappings() {
         if let data = try? JSONEncoder().encode(mappings) {
             UserDefaults.standard.set(data, forKey: storeKey)
         }
@@ -198,6 +217,9 @@ final class Config: ObservableObject {
         var fresh: [String: ButtonMapping] = [:]
         for b in remoteButtons { fresh[b.id] = ButtonMapping() }
         mappings = fresh
+        autoRepeatEnabled = true
+        autoRepeatInitialDelayMs = 500
+        autoRepeatIntervalMs = 100
     }
 
     func binding(for buttonId: String) -> Binding<ButtonMapping> {
@@ -247,10 +269,8 @@ final class RemoteEngine: ObservableObject {
     private var tapRunLoopSource: CFRunLoopSource?
 
     /// 长按自动重复：HID down 后等 initialDelay，没松手就以 interval 周期重复触发 chord。
-    /// 模仿 macOS 系统键盘的"延迟 + 重复"节奏。
+    /// 模仿 macOS 系统键盘的"延迟 + 重复"节奏。开关 + 速度由 Config 控制。
     private var repeatTimers: [String: Timer] = [:]
-    private let autoRepeatInitialDelay: TimeInterval = 0.5  // 长按 0.5s 后开始
-    private let autoRepeatInterval:     TimeInterval = 0.1  // 之后每 100ms 重复一次
 
     /// CGEventTap 当前要吞掉的系统事件键集合 —— 由 IOHID 在检测到映射按键时填充。
     /// 双层架构核心：不 seize 设备（避免 0xE00002C1 特权问题），改用 tap 拦截系统事件。
@@ -540,12 +560,14 @@ final class RemoteEngine: ObservableObject {
     }
 
     private func startAutoRepeat(buttonId: String, keys: [String]) {
+        let cfg = Config.shared
+        guard cfg.autoRepeatEnabled else { return }
         stopAutoRepeat(buttonId: buttonId)  // 防御性：清掉残留 timer
-        let interval = autoRepeatInterval
-        let initial = Timer.scheduledTimer(withTimeInterval: autoRepeatInitialDelay, repeats: false) { [weak self] _ in
+        let initialSec  = TimeInterval(cfg.autoRepeatInitialDelayMs) / 1000.0
+        let intervalSec = TimeInterval(cfg.autoRepeatIntervalMs) / 1000.0
+        let initial = Timer.scheduledTimer(withTimeInterval: initialSec, repeats: false) { [weak self] _ in
             guard let self = self else { return }
-            // 进入重复阶段
-            let repeating = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            let repeating = Timer.scheduledTimer(withTimeInterval: intervalSec, repeats: true) { [weak self] _ in
                 self?.postChordDown(keyIds: keys)
                 self?.postChordUp(keyIds: keys)
             }
@@ -763,6 +785,8 @@ struct ContentView: View {
                 sectionGroup("系统功能",   ids: groupSystem)
                 sectionGroup("音量",       ids: groupVolume)
 
+                autoRepeatSection
+
                 HStack(spacing: 8) {
                     Toggle(isOn: Binding(
                         get: { loginItem.isEnabled },
@@ -795,6 +819,46 @@ struct ContentView: View {
                 .font(.caption2).foregroundColor(.secondary)
                 .padding(.top, 2)
             ForEach(ids, id: \.self) { id in mappingRow(for: id) }
+        }
+    }
+
+    private var autoRepeatSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("长按自动重复").font(.caption2).foregroundColor(.secondary)
+                Spacer()
+                Toggle("", isOn: $config.autoRepeatEnabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.mini)
+            }
+            .padding(.top, 2)
+
+            if config.autoRepeatEnabled {
+                HStack(spacing: 6) {
+                    Text("启动延迟").font(.caption).frame(width: 56, alignment: .leading)
+                    Slider(value: Binding(
+                        get: { Double(config.autoRepeatInitialDelayMs) },
+                        set: { config.autoRepeatInitialDelayMs = Int($0) }
+                    ), in: 200...1500, step: 50)
+                    Text("\(config.autoRepeatInitialDelayMs) ms")
+                        .font(.caption).monospacedDigit()
+                        .frame(width: 56, alignment: .trailing)
+                }
+                HStack(spacing: 6) {
+                    Text("重复间隔").font(.caption).frame(width: 56, alignment: .leading)
+                    Slider(value: Binding(
+                        get: { Double(config.autoRepeatIntervalMs) },
+                        set: { config.autoRepeatIntervalMs = Int($0) }
+                    ), in: 30...500, step: 10)
+                    Text("\(config.autoRepeatIntervalMs) ms")
+                        .font(.caption).monospacedDigit()
+                        .frame(width: 56, alignment: .trailing)
+                }
+            } else {
+                Text("已关闭：按一次只触发一次 chord，不会自动重复")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
         }
     }
 
@@ -1024,7 +1088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             • 左键状态栏图标 → 配置面板
             • 右键状态栏图标 → 快捷菜单
 
-            版本 1.0.1
+            版本 1.0.2
             """
         alert.runModal()
     }

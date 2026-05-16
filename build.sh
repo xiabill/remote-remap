@@ -5,9 +5,18 @@ cd "$(dirname "$0")"
 APP_NAME="RemoteRemap"
 APP_BUNDLE="${APP_NAME}.app"
 BUNDLE_ID="com.xiabill.remote-remap"
-VERSION="1.0.1"
+VERSION="1.0.2"
 
-# 1. 清理上次构建
+# 1. 生成图标（不存在时）
+if [[ ! -f AppIcon.icns ]]; then
+  echo "→ 生成 icon…"
+  swiftc -framework Cocoa make-icon.swift -o make-icon
+  ./make-icon AppIcon.iconset
+  iconutil -c icns AppIcon.iconset -o AppIcon.icns
+  rm -rf AppIcon.iconset make-icon
+fi
+
+# 2. 清理上次构建
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
@@ -23,6 +32,11 @@ swiftc -O -parse-as-library \
 
 file "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | sed 's/^/   /'
 
+# 拷贝 icon 到 bundle
+if [[ -f AppIcon.icns ]]; then
+  cp AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+fi
+
 # 3. Info.plist
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,6 +50,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>

@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 APP_NAME="RemoteRemap"
 APP_BUNDLE="${APP_NAME}.app"
-VERSION="1.0.1"
+VERSION="1.0.2"
 DIST_DIR="dist"
 DMG_PATH="${DIST_DIR}/${APP_NAME}-${VERSION}.dmg"
 STAGING="${DIST_DIR}/.dmg-staging"

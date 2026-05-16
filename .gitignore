@@ -2,6 +2,9 @@
 RemoteRemap.app/
 RemoteRemap
 probe
+make-icon
+AppIcon.iconset/
+AppIcon.icns
 dist/
 
 # macOS
