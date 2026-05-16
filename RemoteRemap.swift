@@ -228,13 +228,17 @@ private let modifierKeyMask: [UInt16: CGEventFlags] = [
 private let TARGET_VID: Int = 0x1915
 private let TARGET_PID: Int = 0x1025
 
+/// 我们自己 post 的 CGEvent 会把这个魔数写进 CGEventSource.userData，
+/// 让 handleTap() 一眼认出是自家事件、不吞掉自己。
+/// 关键场景：用户把"OK→Enter"，OK 的 swallow=kc36，chord 也是 kc36 —— 不戳就自吞。
+private let RR_EVENT_MAGIC: Int64 = 0x52524D50  // "RRMP" ASCII
+
 
 final class RemoteEngine: ObservableObject {
     static let shared = RemoteEngine()
 
     @Published private(set) var isRunning = false
     @Published private(set) var deviceConnected = false
-    @Published private(set) var holdingCount = 0  // 当前 hold 中的映射数
     @Published var lastError: String?  // 启动失败时显示给用户
 
     private var manager: IOHIDManager?
@@ -242,8 +246,11 @@ final class RemoteEngine: ObservableObject {
     private var eventTap: CFMachPort?
     private var tapRunLoopSource: CFRunLoopSource?
 
-    /// hold 状态：以 RemoteButton.id 作 key，记录已按下的 chord 按键 ID 数组
-    private var holdingChords: [String: [String]] = [:]
+    /// 长按自动重复：HID down 后等 initialDelay，没松手就以 interval 周期重复触发 chord。
+    /// 模仿 macOS 系统键盘的"延迟 + 重复"节奏。
+    private var repeatTimers: [String: Timer] = [:]
+    private let autoRepeatInitialDelay: TimeInterval = 0.5  // 长按 0.5s 后开始
+    private let autoRepeatInterval:     TimeInterval = 0.1  // 之后每 100ms 重复一次
 
     /// CGEventTap 当前要吞掉的系统事件键集合 —— 由 IOHID 在检测到映射按键时填充。
     /// 双层架构核心：不 seize 设备（避免 0xE00002C1 特权问题），改用 tap 拦截系统事件。
@@ -415,6 +422,12 @@ final class RemoteEngine: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
+        // 自家发的 chord 事件携带 RR_EVENT_MAGIC，直接放行 ——
+        // 否则会发生"OK→Enter 把自己也吞了"那类自吞 bug。
+        if event.getIntegerValueField(.eventSourceUserData) == RR_EVENT_MAGIC {
+            return Unmanaged.passUnretained(event)
+        }
+
         if type == .keyDown || type == .keyUp {
             let kc = event.getIntegerValueField(.keyboardEventKeycode)
             if shouldSwallow(.keyboard(kc)) { return nil }
@@ -430,7 +443,7 @@ final class RemoteEngine: ObservableObject {
 
     func stop() {
         guard isRunning else { return }
-        releaseAllHeld()
+        stopAllAutoRepeats()
         clearSwallows()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -515,24 +528,40 @@ final class RemoteEngine: ObservableObject {
             }
         }
 
-        // 触发映射（只在 down 沿）
-        guard isDown else { return }
-        switch mapping.mode {
-        case .tap:
+        if isDown {
+            // 立即 fire 一次（保持点按的即时响应感）
             postChordDown(keyIds: mapping.keys)
             postChordUp(keyIds: mapping.keys)
-        case .holdToggle:
-            if let chord = holdingChords[button.id] {
-                postChordUp(keyIds: chord)
-                holdingChords.removeValue(forKey: button.id)
-            } else {
-                postChordDown(keyIds: mapping.keys)
-                holdingChords[button.id] = mapping.keys
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.holdingCount = self?.holdingChords.count ?? 0
-            }
+            // 启动长按自动重复
+            startAutoRepeat(buttonId: button.id, keys: mapping.keys)
+        } else {
+            stopAutoRepeat(buttonId: button.id)
         }
+    }
+
+    private func startAutoRepeat(buttonId: String, keys: [String]) {
+        stopAutoRepeat(buttonId: buttonId)  // 防御性：清掉残留 timer
+        let interval = autoRepeatInterval
+        let initial = Timer.scheduledTimer(withTimeInterval: autoRepeatInitialDelay, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            // 进入重复阶段
+            let repeating = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+                self?.postChordDown(keyIds: keys)
+                self?.postChordUp(keyIds: keys)
+            }
+            self.repeatTimers[buttonId] = repeating
+        }
+        repeatTimers[buttonId] = initial
+    }
+
+    private func stopAutoRepeat(buttonId: String) {
+        repeatTimers[buttonId]?.invalidate()
+        repeatTimers[buttonId] = nil
+    }
+
+    private func stopAllAutoRepeats() {
+        for (_, t) in repeatTimers { t.invalidate() }
+        repeatTimers.removeAll()
     }
 
     // ----- chord 输出（从 AirPodsRemap 复用） -----
@@ -578,22 +607,14 @@ final class RemoteEngine: ObservableObject {
         }
     }
 
-    func releaseAllHeld() {
-        for (_, chord) in holdingChords {
-            postChordUp(keyIds: chord)
-        }
-        holdingChords.removeAll()
-        DispatchQueue.main.async { [weak self] in
-            self?.holdingCount = 0
-        }
-    }
-
     private func postKeyDown(keyCode: UInt16, flags: UInt64) {
         let src = CGEventSource(stateID: .hidSystemState)
         let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true)
         var f = CGEventFlags(rawValue: flags)
         if let modMask = modifierKeyMask[keyCode] { f.insert(modMask) }
         down?.flags = f
+        // 自家戳：把 RR magic 写进 event 的 sourceUserData 字段，handleTap 见到就放行
+        down?.setIntegerValueField(.eventSourceUserData, value: RR_EVENT_MAGIC)
         down?.post(tap: .cghidEventTap)
     }
 
@@ -601,6 +622,7 @@ final class RemoteEngine: ObservableObject {
         let src = CGEventSource(stateID: .hidSystemState)
         let up = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false)
         up?.flags = CGEventFlags(rawValue: flags)
+        up?.setIntegerValueField(.eventSourceUserData, value: RR_EVENT_MAGIC)
         up?.post(tap: .cghidEventTap)
     }
 
@@ -657,22 +679,12 @@ struct MappingRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 主行：勾选 + 名字 + 模式 + 第一个按键 + 加号
+            // 主行：勾选 + 名字 + 第一个按键 + 加号
             HStack(spacing: 6) {
                 Toggle("", isOn: $mapping.enabled).labelsHidden()
                 Text(button.label)
                     .frame(width: 78, alignment: .leading)
                     .font(.system(size: 12))
-
-                Picker("", selection: $mapping.mode) {
-                    Text("点按").tag(MappingMode.tap)
-                    Text("按住").tag(MappingMode.holdToggle)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 86)
-                .disabled(!mapping.enabled)
-                .controlSize(.small)
 
                 Picker("", selection: firstKeyBinding) {
                     ForEach(keyChoices) { c in Text(c.label).tag(c.id) }
@@ -696,7 +708,7 @@ struct MappingRow: View {
             if mapping.keys.count > 1 {
                 ForEach(1..<mapping.keys.count, id: \.self) { idx in
                     HStack(spacing: 6) {
-                        Spacer().frame(width: 188)
+                        Spacer().frame(width: 102)
                         Image(systemName: "plus")
                             .foregroundColor(.secondary)
                             .font(.system(size: 9))
@@ -866,11 +878,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.updateIconAppearance() }
             .store(in: &cancellables)
 
-        RemoteEngine.shared.$holdingCount
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateIconAppearance() }
-            .store(in: &cancellables)
-
         DistributedNotificationCenter.default.addObserver(
             forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil, queue: .main
@@ -892,9 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let eng = RemoteEngine.shared
         button.alphaValue = eng.isRunning ? 1.0 : 0.4
         applyStatusIcon(to: button)
-        if eng.holdingCount > 0 {
-            button.contentTintColor = .systemRed
-        } else if eng.isRunning && !eng.deviceConnected {
+        if eng.isRunning && !eng.deviceConnected {
             button.contentTintColor = .systemOrange
         } else {
             button.contentTintColor = nil
@@ -1019,7 +1024,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             • 左键状态栏图标 → 配置面板
             • 右键状态栏图标 → 快捷菜单
 
-            版本 1.0.0
+            版本 1.0.1
             """
         alert.runModal()
     }
@@ -1034,8 +1039,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
     func applicationWillTerminate(_ notification: Notification) {
-        RemoteEngine.shared.releaseAllHeld()
-        RemoteEngine.shared.stop()  // 释放设备，让系统恢复原生处理
+        RemoteEngine.shared.stop()  // 释放设备 + tap，让系统恢复原生处理
     }
 }
 

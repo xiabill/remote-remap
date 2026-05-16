@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 APP_NAME="RemoteRemap"
 APP_BUNDLE="${APP_NAME}.app"
 BUNDLE_ID="com.xiabill.remote-remap"
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # 1. 清理上次构建
 rm -rf "$APP_BUNDLE"
