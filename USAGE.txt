@@ -67,8 +67,9 @@ Remote Remap 使用说明
 
 ▌支持的遥控器
 
-只认 VID 0x1915 / PID 0x1025 的 2.4G USB 接收器
-（XING WEI / 国产 Android TV 风格迷你遥控键盘常见方案）
+默认 VID 0x1915 / PID 0x1025（XING WEI 2.4G 接收器）
+其他 2.4G USB HID 遥控器也能用：
+  配置面板顶部「目标设备」→「切换…」→ 下拉里选你插的设备
 
 ▌12 颗按键
 

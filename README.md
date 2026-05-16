@@ -1,100 +1,103 @@
 # Remote Remap
 
-把 **2.4G 无线遥控键盘**（XING WEI 系列接收器 / VID `0x1915` PID `0x1025`）的每一颗按键映射到任意键盘 chord（组合键）的 macOS 菜单栏小工具。
+> 把 **2.4G 无线遥控键盘** 的每一颗按键独立映射到任意 macOS 键盘 chord 的菜单栏小工具。
+> **开源 / MIT / 完全由 [Claude Code](https://claude.com/claude-code) 写就。**
 
-> 跟 [AirPodsRemap](https://github.com/xiabill/airpods-remap) 是兄弟项目，同一套 chord 引擎，只是输入源从 AirPods stem 换成了 HID 遥控器。**完全由 [Claude Code](https://claude.com/claude-code) 写就。**
-
----
-
-## 硬件支持
-
-只认 **VID `0x1915` / PID `0x1025`** 这一款 2.4G USB 接收器。常见于淘宝/AliExpress 卖的 "迷你无线遥控键盘"、"TV box 飞鼠遥控器" 等 Android TV 风格遥控器。
-
-如果你的遥控器 VID/PID 不同，改 `RemoteRemap.swift` 顶部的两个常量即可：
-
-```swift
-private let TARGET_VID: Int = 0x1915
-private let TARGET_PID: Int = 0x1025
-```
+![Hardware](assets/remote-hardware.jpg)
 
 ---
 
-## 12 颗按键
+## 这是什么
 
-| 分组 | 物理键 | HID 来源 |
+一类便宜的 **2.4G 无线遥控键盘**（淘宝 / 拼多多 / 1688 上几十块到一百多块都能买到，原本是配 Android 电视盒 / HTPC 用的）插到 Mac 上能正常发按键事件，但很多按键 macOS 上没有对应行为或者干的事不是你想要的（比如方向键、🏠 主页、🎤 语音、☰ 菜单等）。
+
+本 app 把这些按键**精确接管**，每颗都可以映射成任意键盘 chord（单键或多键组合，比如 `⌘ ⇧ V`），同时**完美拦截系统的原始事件**，不会双触发。
+
+跟 [AirPodsRemap](https://github.com/xiabill/airpods-remap) 是兄弟项目，共享同一套 chord 引擎。
+
+---
+
+## 兼容硬件
+
+### 已知工作
+
+| 硬件 | VID:PID | 备注 |
 |---|---|---|
-| 方向 | ↑ ↓ ← → | Keyboard usage 0x52 / 0x51 / 0x50 / 0x4F |
-| 确认 | ⭕ OK | Keyboard usage 0x28 |
-| 菜单 | ☰ Menu | Keyboard usage 0x65 |
-| 系统 | 🏠 主页 / ↩ 返回 / 🎤 语音 | Consumer usage 0x223 / 0x224 / 0xCF |
-| 音量 | 🔊 Vol+ / 🔉 Vol- / 🔇 静音 | Consumer usage 0xE9 / 0xEA / 0xE2 |
+| **XING WEI 2.4G USB 遥控键盘**（默认） | `0x1915:0x1025` | 淘宝/拼多多搜「**2.4G 无线遥控键盘**」「**Android TV 飞鼠遥控**」等关键词的一大类常见货色用的方案 |
 
-每颗键独立映射，支持：
+### 想测试你自己的遥控器？
 
-- **任意 chord**：单键或多键（比如 `⌘ ⇧ V`）
-- **长按自动重复**：按住遥控器按键不放，立刻触发一次，0.5 秒后开始以约 10 Hz 重复，松手即停（节奏对齐 macOS 系统键盘）
+只要它满足这两个条件，**理论上都能用**：
+
+1. 通过 **USB 2.4G 接收器** 接入 Mac（蓝牙的不支持，要改代码）
+2. 在 macOS 里被识别为 **HID 键盘**（不是专有 driver）
+
+直接：
+1. 安装 v1.0.3+ 版本
+2. 配置面板顶部「目标设备」→ 点「切换…」→ **下拉里会列出所有当前接着的 HID 键盘类设备** → 点你的遥控器
+3. 试按几颗键，能直接生效就成功了
+
+如果按某些键没反应，说明这颗按键发的 HID usage 跟我们 hardcoded 的列表不一样，**欢迎提 PR / issue 报告**，把按键映射加进 `remoteButtons` 数组即可（详见下方「贡献新设备」）。
+
+### 想全新硬件支持？欢迎贡献
+
+如果你有不同的 2.4G 遥控键盘，跑一下 `swift probe.swift`，按按键看打印出的 HID 事件，把：
+- 你的设备 VID/PID
+- 每颗按键的 `(usagePage, usage)`
+- 一张实物图
+
+**提个 issue 或 PR 过来**，我把它合并进兼容设备列表，让别人也能受益。开源项目大家共建。
+
+---
+
+## 功能
+
+- **12 颗按键独立映射**（方向 × 4 / OK / 菜单 / 主页 / 返回 / 语音 / 静音 / Vol± × 2）
+- **任意 chord**：单键或多键组合，修饰键的 flags 自动累加
+- **长按自动重复**：开关可关，启动延迟（200–1500ms）+ 重复间隔（30–500ms）滑块可调，节奏对齐 macOS 系统键盘
 - **65+ 个可选键码**：左右修饰键独立、F13–F20、Letters、Digits、方向键、Space/Return/Esc/Tab/Delete 等
-
----
-
-## 工作原理（与 AirPodsRemap 的关键差异）
-
-| 方面 | AirPodsRemap | Remote Remap |
-|---|---|---|
-| 输入源 | CGEventTap 拦 NSSystemDefined (media key) | IOHIDManager 直接读硬件 HID |
-| 设备识别 | 不区分（任何 media key 都算） | 按 VID/PID 精确匹配，**只动这台遥控器** |
-| 接管方式 | 拦 + 选择性透传 | 双层：IOHID 识别 + CGEventTap 吞咽对应系统事件 |
-| 权限 | 辅助功能 | 辅助功能 **+ 输入监听** |
-
-为什么要双层？因为 self-signed app 拿不到 IOKit 的 `kIOHIDOptionsTypeSeizeDevice` 特权（会返回 `0xE00002C1 kIOReturnNotPrivileged`）。所以我们：
-
-1. IOHIDManager **不 seize**，只读事件（用"输入监听"权限）
-2. 同时挂一个 CGEventTap（用"辅助功能"权限），当 IOHID 识别到映射按键时，告诉 tap 在接下来的 100ms 内吞掉对应的系统事件
-3. 这样既能精确"接管"，又不需要 DriverKit / root
+- **设备热切换**：UI 里扫描 + 选择目标硬件，不需要改源码
+- **系统原行为精确拦截**（不会双触发）
+- **状态栏 app**：菜单栏图标 / 配置面板 / 右键菜单 / 暂停启动 / 开机自启
 
 ---
 
 ## 安装
 
-### 从源码构建
+### 方式 A：下载 DMG（推荐）
 
-需要 Xcode Command Line Tools（`xcode-select --install`）。
+到 [Releases](https://github.com/xiabill/remote-remap/releases) 下载最新的 `RemoteRemap-x.y.z.dmg`：
+
+1. 双击挂载 → 拖 RemoteRemap.app 到「应用程序」
+2. 启动会被 macOS 拦下（self-signed 应用），系统设置 → 隐私与安全性 → 拉到最下 → **仍要打开**
+3. 授权两个权限：**输入监听** + **辅助功能**（系统设置 → 隐私与安全性 里都打开 RemoteRemap）
+4. 杀掉重启一次：`pkill -f RemoteRemap && open /Applications/RemoteRemap.app`
+5. 菜单栏出现遥控器图标 = 成功
+
+### 方式 B：从源码构建
+
+需要 Xcode Command Line Tools (`xcode-select --install`)。
 
 ```bash
-git clone <repo>
-cd remote-keyboard
+git clone https://github.com/xiabill/remote-remap
+cd remote-remap
 ./setup-codesign.sh    # 一次性：创建 self-signed 证书让权限永久保留
-./build.sh             # 编译并签名 RemoteRemap.app
+./build.sh             # 编译 + 签名 + 嵌图标 → RemoteRemap.app
 open RemoteRemap.app
 ```
 
-> 如果跳过 `setup-codesign.sh` 直接 `./build.sh`，会用 ad-hoc 签名 —— 能跑，但每次重编都会丢权限要重新授权。
-
-### 首次启动权限
-
-1. App 启动后状态栏出现遥控器图标 📺
-2. 系统会**依次弹两个权限对话框**：
-   - 「想要监听键盘事件」→ **输入监听** → 在「系统设置 → 隐私与安全性 → 输入监听」打开 RemoteRemap
-   - 「想要控制您的电脑」→ **辅助功能** → 同上路径打开
-3. **关键**：每次新装/重建签名都要确认两个权限里 RemoteRemap 是当前签名的版本。授权后**杀掉 app 重新打开**。
-4. 状态栏图标变绿点 + "运行中" = 大功告成
-
 ---
 
-## 使用
+## 工作原理
 
-- **左键**状态栏图标 → 配置面板
-- **右键**状态栏图标 → 快捷菜单（启动 / 暂停 / 重启 / 退出）
-- 每个按键勾选 → 选「点按」or「按住」→ 选目标键（可加多个组成 chord）→ 自动保存
-
-### 状态栏图标颜色
-
-| 颜色 | 含义 |
+| 层 | 干什么 |
 |---|---|
-| 绿点 | 运行中 + 检测到遥控器 |
-| 橙点 | 运行中但**找不到遥控器**（拔了 / 没插好） |
-| 灰 | 已暂停 |
-| 红 | 当前有按键处于"按住"状态（防止 Opt 卡死的提醒） |
+| **IOHIDManager** | 按 VID/PID 精确匹配你选的那台遥控器（用「输入监听」权限读 HID） |
+| **CGEventTap** | 系统级事件钩子，识别到映射按键时吞掉系统原始事件（用「辅助功能」权限） |
+| **CGEvent post + sourceUserData magic** | chord 输出，带自家戳防止被 tap 自吞 |
+| **Timer** | 长按自动重复，按 Config 的延迟和间隔节奏 fire chord |
+
+为什么不直接 seize HID 设备独占接管？因为 self-signed app 拿不到 `com.apple.developer.driverkit.transport.usb` entitlement，seize 会返回 `kIOReturnNotPrivileged`。CGEventTap 是变通方案，**对绝大多数按键都管用**，少数走系统内核私有路径的（语音键的 macOS 听写）拦不到 —— 详见下方限制。
 
 ---
 
@@ -112,37 +115,58 @@ open RemoteRemap.app
 
 遥控器自带的 USB 麦克风（注册为 16kHz 单声道音频输入）在 macOS 上看着是常开设备，但**实测连续录音 1–2 分钟后会自动断流**，需要再按一次 🎤 才能重新开始。
 
-**根因**：这是**遥控器固件的硬性 timeout**（典型的 TV 遥控器省电策略 —— mic 通电吃电池），不是 macOS / Typeless / 本 app 能干预的。我们尝试过：
+**根因**：这是**遥控器固件的硬性 timeout**（典型的 TV 遥控器省电策略 —— mic 持续通电吃电池），不是 macOS / Typeless / 本 app 能干预的。我们尝试过：
 - 让其他 app 同时持续读取该 mic → 不能续命
 - 寻找 vendor-specific USB 控制命令 → 没有公开文档
 
 **绕过方案**：
-- **把第三方听写工具（Typeless / WhisperKey / MacWhisper 等）的输入设备改成 Mac 内置麦克风**，遥控器只用来按键触发。Mac 内置 mic 音质更好、永不超时。
+- 把第三方听写工具（Typeless / WhisperKey / MacWhisper 等）的输入设备改成 **Mac 内置麦克风**，遥控器只用来按键触发。Mac 内置 mic 音质更好、永不超时。
 - 或换一款专门为 PC 设计的"始终在线"USB 麦克风遥控器。
 
 ### 其他
 
-- 只支持 **VID/PID 写死** 的那一款接收器。其他遥控器需改源码常量。
 - 鼠标接口（飞鼠 / pointer 模式）**留给系统处理**，不会被接管 —— 指针功能照常用。
-- 100ms 的 tap 吞咽窗口期内，任何其他来源的同 keycode 事件也会被吞。例如映射了 🔊 Vol+，那这 100ms 内 Mac 主键盘的 F12（Vol+）按键也会被吞。实际很少冲突。
+- 100ms 的 tap 吞咽窗口期内，任何其他来源的同 keycode 事件也会被吞。例如映射了 🔊 Vol+，这 100ms 内 Mac 主键盘的 F12（Vol+）按键也会被吞。实际很少冲突。
 
 ---
 
-## 文件结构
+## 贡献新设备
+
+如果你的遥控器跟默认的 XING WEI 不一样、有些按键收不到，做这三件事帮我把它加进兼容列表：
+
+1. 跑探测：
+   ```bash
+   cd remote-remap
+   swift probe.swift
+   ```
+   按一下你想加的按键，记下打印的 `HID page=0xXX usage=0xYY value=1` 这一行
+2. 在 `RemoteRemap.swift` 的 `remoteButtons` 数组里加一行：
+   ```swift
+   .init(id: "myButton", label: "我的按键", usagePage: 0x07, usage: 0xXX, passthrough: .none),
+   ```
+3. 提 PR / issue，包含：设备 VID/PID + 按键 usage 表 + 实物图
+
+---
+
+## 项目结构
 
 ```
 remote-keyboard/
-├── RemoteRemap.swift     # 单文件 app（约 600 行）
-├── build.sh              # 编译 + 签名 + 打包成 .app
+├── RemoteRemap.swift     # 单文件 app
+├── probe.swift           # HID 事件探测器（加新硬件时用）
+├── make-icon.swift       # 程序图标生成器
+├── build.sh              # 编译 + 签名 + 打包 .app
+├── make-dmg.sh           # 打 DMG
 ├── setup-codesign.sh     # 一次性创建 self-signed 证书
-├── probe.swift           # 调试工具：列出遥控器所有 HID 事件
+├── assets/               # README 用的图片
+├── USAGE.txt             # 用户使用说明
 └── README.md
 ```
-
-`probe.swift` 是当时摸清遥控器 12 颗键编码用的探测器，跑 `swift probe.swift` 然后按按键就会打印 raw HID report。出新硬件时可以用来扩展按键表。
 
 ---
 
 ## License
 
-MIT
+MIT — 自由 fork / 改 / 商用。代码全开放，**欢迎提 issue / PR 报告兼容硬件、报 bug、加功能**。
+
+如果这个项目对你有帮助，给个 ⭐ Star。

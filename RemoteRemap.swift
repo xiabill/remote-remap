@@ -175,6 +175,8 @@ final class Config: ObservableObject {
     private let arEnabledKey   = "autoRepeatEnabled"
     private let arInitialMsKey = "autoRepeatInitialDelayMs"
     private let arIntervalMsKey = "autoRepeatIntervalMs"
+    private let vidKey = "targetVID"
+    private let pidKey = "targetPID"
 
     /// 每颗按键的映射（key 是 RemoteButton.id）。
     @Published var mappings: [String: ButtonMapping] {
@@ -192,6 +194,14 @@ final class Config: ObservableObject {
         didSet { UserDefaults.standard.set(autoRepeatIntervalMs, forKey: arIntervalMsKey) }
     }
 
+    /// 目标设备 VID / PID。用户可在 UI 里通过「扫描」选择硬件 → 自动写回这两个字段。
+    @Published var targetVID: Int {
+        didSet { UserDefaults.standard.set(targetVID, forKey: vidKey) }
+    }
+    @Published var targetPID: Int {
+        didSet { UserDefaults.standard.set(targetPID, forKey: pidKey) }
+    }
+
     private init() {
         var initial: [String: ButtonMapping] = [:]
         for b in remoteButtons { initial[b.id] = ButtonMapping() }
@@ -205,6 +215,8 @@ final class Config: ObservableObject {
         self.autoRepeatEnabled        = (d.object(forKey: arEnabledKey)   as? Bool) ?? true
         self.autoRepeatInitialDelayMs = (d.object(forKey: arInitialMsKey) as? Int)  ?? 500
         self.autoRepeatIntervalMs     = (d.object(forKey: arIntervalMsKey) as? Int) ?? 100
+        self.targetVID = (d.object(forKey: vidKey) as? Int) ?? DEFAULT_TARGET_VID
+        self.targetPID = (d.object(forKey: pidKey) as? Int) ?? DEFAULT_TARGET_PID
     }
 
     private func saveMappings() {
@@ -220,6 +232,8 @@ final class Config: ObservableObject {
         autoRepeatEnabled = true
         autoRepeatInitialDelayMs = 500
         autoRepeatIntervalMs = 100
+        targetVID = DEFAULT_TARGET_VID
+        targetPID = DEFAULT_TARGET_PID
     }
 
     func binding(for buttonId: String) -> Binding<ButtonMapping> {
@@ -246,9 +260,58 @@ private let modifierKeyMask: [UInt16: CGEventFlags] = [
 
 // MARK: - HID 引擎（独占接管遥控器，处理映射 / 透传）
 
-/// 目标设备：XING WEI 2.4G USB
-private let TARGET_VID: Int = 0x1915
-private let TARGET_PID: Int = 0x1025
+/// 默认目标设备：XING WEI 2.4G USB（常见的国产 2.4G TV 遥控器接收器）
+/// 用户可以在 UI 里通过「扫描」选择其他兼容硬件。
+private let DEFAULT_TARGET_VID: Int = 0x1915
+private let DEFAULT_TARGET_PID: Int = 0x1025
+
+// MARK: - HID 设备扫描（让用户在配置面板选目标硬件）
+
+struct DetectedDevice: Hashable, Identifiable {
+    let vendorId: Int
+    let productId: Int
+    let manufacturer: String
+    let product: String
+    var id: String { "\(vendorId):\(productId)" }
+    var hexId: String { String(format: "0x%04X:0x%04X", vendorId, productId) }
+    var displayName: String {
+        let m = manufacturer.isEmpty ? "" : "\(manufacturer)  "
+        let p = product.isEmpty ? "(未知设备)" : product
+        return "\(m)\(p)  \(hexId)"
+    }
+}
+
+/// 列出当前插着、且看起来像"遥控键盘 / 类键盘 HID"的 USB 设备。
+/// 过滤掉 Apple 自家键盘（VID 0x05AC），避免选错把内置键盘接管。
+func enumerateRemoteCandidates() -> [DetectedDevice] {
+    let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    let matching: [String: Any] = [
+        kIOHIDDeviceUsagePageKey as String: 0x01,  // Generic Desktop
+        kIOHIDDeviceUsageKey as String:     0x06,  // Keyboard
+    ]
+    IOHIDManagerSetDeviceMatching(manager, matching as CFDictionary)
+
+    guard let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> else {
+        return []
+    }
+
+    var seen = Set<String>()
+    var result: [DetectedDevice] = []
+    for device in devices {
+        let vid = (IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
+        let pid = (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) ?? 0
+        let manuf = (IOHIDDeviceGetProperty(device, kIOHIDManufacturerKey as CFString) as? String) ?? ""
+        let prod = (IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String) ?? ""
+
+        if vid == 0x05AC { continue }  // Apple — 别把内置键盘接管了
+        let key = "\(vid):\(pid)"
+        if seen.contains(key) { continue }
+        seen.insert(key)
+
+        result.append(DetectedDevice(vendorId: vid, productId: pid, manufacturer: manuf, product: prod))
+    }
+    return result.sorted { $0.displayName < $1.displayName }
+}
 
 /// 我们自己 post 的 CGEvent 会把这个魔数写进 CGEventSource.userData，
 /// 让 handleTap() 一眼认出是自家事件、不吞掉自己。
@@ -351,9 +414,10 @@ final class RemoteEngine: ObservableObject {
         // 只按 VID/PID 匹配，让所有接口（Keyboard / Mouse / Consumer）都进来。
         // dispatch() 里按 (usagePage, usage) 查表过滤，未知元素自动丢弃 ——
         // 所以体感飞鼠的 pointer 事件不会被误处理（我们只认 remoteButtons 里列的按键）。
+        let cfg = Config.shared
         let matching: [String: Any] = [
-            kIOHIDVendorIDKey as String:  TARGET_VID,
-            kIOHIDProductIDKey as String: TARGET_PID,
+            kIOHIDVendorIDKey as String:  cfg.targetVID,
+            kIOHIDProductIDKey as String: cfg.targetPID,
         ]
         IOHIDManagerSetDeviceMatching(m, matching as CFDictionary)
 
@@ -487,6 +551,13 @@ final class RemoteEngine: ObservableObject {
 
     func toggle() {
         if isRunning { stop() } else { _ = start() }
+    }
+
+    /// 切换目标设备后调用：停掉旧设备的监听，按新 VID/PID 重新建 manager
+    func restart() {
+        let wasRunning = isRunning
+        if isRunning { stop() }
+        if wasRunning { _ = start() }
     }
 
     // ----- 设备连接 / 断开 -----
@@ -781,6 +852,8 @@ struct ContentView: View {
                         .cornerRadius(6)
                 }
 
+                deviceSection
+
                 sectionGroup("方向 / 确认", ids: groupDpad)
                 sectionGroup("系统功能",   ids: groupSystem)
                 sectionGroup("音量",       ids: groupVolume)
@@ -819,6 +892,60 @@ struct ContentView: View {
                 .font(.caption2).foregroundColor(.secondary)
                 .padding(.top, 2)
             ForEach(ids, id: \.self) { id in mappingRow(for: id) }
+        }
+    }
+
+    @State private var detectedDevices: [DetectedDevice] = []
+
+    private var currentDeviceLabel: String {
+        String(format: "0x%04X : 0x%04X", config.targetVID, config.targetPID)
+    }
+
+    private var deviceSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("目标设备").font(.caption2).foregroundColor(.secondary)
+                Spacer()
+                Menu {
+                    if detectedDevices.isEmpty {
+                        Text("（没扫到 HID 键盘类设备）").font(.caption)
+                    } else {
+                        ForEach(detectedDevices) { dev in
+                            Button(dev.displayName) {
+                                config.targetVID = dev.vendorId
+                                config.targetPID = dev.productId
+                                engine.restart()
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("重新扫描") { detectedDevices = enumerateRemoteCandidates() }
+                    Button("恢复默认 (XING WEI 0x1915:0x1025)") {
+                        config.targetVID = DEFAULT_TARGET_VID
+                        config.targetPID = DEFAULT_TARGET_PID
+                        engine.restart()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("切换…").font(.caption)
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .onAppear { detectedDevices = enumerateRemoteCandidates() }
+            }
+            Text(currentDeviceLabel)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(4)
+            if !engine.deviceConnected && engine.isRunning {
+                Text("⚠️ 当前 VID/PID 没找到匹配设备。点「切换…」选择已插着的硬件，或按官方型号买兼容遥控器。")
+                    .font(.caption2).foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -1088,7 +1215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             • 左键状态栏图标 → 配置面板
             • 右键状态栏图标 → 快捷菜单
 
-            版本 1.0.2
+            版本 1.0.3
             """
         alert.runModal()
     }

@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 APP_NAME="RemoteRemap"
 APP_BUNDLE="${APP_NAME}.app"
 BUNDLE_ID="com.xiabill.remote-remap"
-VERSION="1.0.2"
+VERSION="1.0.3"
 
 # 1. 生成图标（不存在时）
 if [[ ! -f AppIcon.icns ]]; then
