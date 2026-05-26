@@ -1,5 +1,7 @@
 # Remote Remap
 
+> 💡 **如果你同时也戴 AirPods，推荐装合并版 [xiabill/VibeHub](https://github.com/xiabill/VibeHub)** —— 一个 binary、一份权限、两个 Tab。本仓库继续维护，只想要遥控器映射的用户继续装这个就行。
+
 > 把 **2.4G 无线遥控键盘** 的每一颗按键独立映射到任意 macOS 键盘 chord 的菜单栏小工具。
 > **开源 / MIT / 完全由 [Claude Code](https://claude.com/claude-code) 写就。**
 
